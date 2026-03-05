@@ -1,0 +1,31 @@
+version: "3.9"
+
+services:
+  qwen3-asr-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qwen3-asr-service:latest
+    container_name: qwen3-asr-service
+    ports:
+      - "8000:8000"
+    environment:
+      ASR_DEVICE: ${ASR_DEVICE:-cpu}
+      ASR_ENGINE: ${ASR_ENGINE:-mock}
+      ASR_LOG_PATH: /app/logs/asr-service.log
+      ASR_LOG_LEVEL: ${ASR_LOG_LEVEL:-INFO}
+      ASR_PARTIAL_BYTES_THRESHOLD: ${ASR_PARTIAL_BYTES_THRESHOLD:-24000}
+      ASR_PARTIAL_INTERVAL_MS: ${ASR_PARTIAL_INTERVAL_MS:-180}
+      ASR_VAD_ENERGY_THRESHOLD: ${ASR_VAD_ENERGY_THRESHOLD:-120}
+      ASR_VAD_SILENCE_MS: ${ASR_VAD_SILENCE_MS:-350}
+      ASR_TRANSCRIBE_TIMEOUT_MS: ${ASR_TRANSCRIBE_TIMEOUT_MS:-15000}
+      ASR_WS_IDLE_TIMEOUT_MS: ${ASR_WS_IDLE_TIMEOUT_MS:-10000}
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

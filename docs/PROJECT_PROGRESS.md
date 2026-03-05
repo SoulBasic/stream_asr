@@ -1,0 +1,505 @@
+# 项目推进记录（持续更新）
+
+## 2026-03-03
+- 立项并完成 V1 方案与 API 契约文档
+- 完成服务骨架：healthz/transcribe/ws_stream
+- 配置支持 CPU/GPU 切换（默认 CPU）
+- 完成本地日志能力（文件轮转 + 控制台）
+- 新增基础测试并修复导入路径问题
+- M2 已推进：WS 错误码与流式行为增强、README 补充
+
+- [18:39 CST] M2 实质推进：新增流式首字延迟/句子延迟指标
+  - 动作：在 `server/routes/ws_stream.py` 增加 `first_token_latency_ms` 与 `sentence_latency_ms` 的计算、回包与日志字段
+  - 产出：
+    - `server/routes/ws_stream.py`（新增 metrics 字段，新增 `ws_first_partial` 与增强 `ws_stop` 日志）
+    - `tests/test_ws_stream.py`（新增延迟指标断言）
+  - 测试：`source .venv/bin/activate && pytest -q` → `5 passed in 0.17s`
+  - 下一步：继续推进“流式端到端测试（更真实 chunk 时序）”，补齐时序抖动与静音间隙场景
+
+- [18:58 CST] M2 实质推进：补齐流式端到端时序测试（抖动 + 静音间隙）
+  - 动作：使用 Codex 在 `tests/test_ws_stream.py` 新增 `test_ws_stream_time_triggered_partial_with_jitter_and_silence`，通过 monkeypatch `server.routes.ws_stream.monotonic` 构造可控时间线，验证 partial 可由时间阈值触发（非字节阈值）
+  - 产出：
+    - `tests/test_ws_stream.py`（新增真实分片时序场景：60ms/70ms 抖动 + 180ms 静音间隙；断言 `first_token_latency_ms >= partial_interval_ms`；断言 `sentence_latency_ms >= first_token_latency_ms`）
+  - 测试：
+    - `pytest -q`（失败：环境无全局 pytest 命令）
+    - `.venv/bin/python -m pytest -q`（通过：`6 passed in 0.17s`）
+  - 下一步：在 CPU 环境做一轮参数基线验证（`partial_interval_ms`/`partial_bytes_threshold`/VAD 组合），补充推荐默认值与测试矩阵
+
+- [19:20 CST] M2 实质推进：补齐 CPU 参数安全边界回归（Config + VAD）
+  - 动作：使用 Codex 新增 `tests/test_config_vad_baseline.py`，覆盖 `Settings.from_env` 边界/兜底与 `SimpleVAD.should_cut` 的静音触发/有声重置核心行为，建立 CPU 参数基线的自动化回归门槛
+  - 产出：
+    - `tests/test_config_vad_baseline.py`
+      - `ASR_DEVICE` 非法值回退 `cpu`
+      - `ASR_PARTIAL_BYTES_THRESHOLD` 最小值钳制（1024）
+      - `ASR_PARTIAL_INTERVAL_MS` 最小值钳制（50ms）
+      - `ASR_VAD_ENERGY_THRESHOLD`/`ASR_VAD_SILENCE_MS` 非法输入兜底默认值
+      - VAD 持续静音达到阈值触发切句
+      - 有声帧到来后静音累计重置并重新累计
+  - 测试：`.venv/bin/python -m pytest -q` → `12 passed in 0.17s`
+  - 下一步：继续做 CPU 参数组合基线（`partial_interval_ms` × `partial_bytes_threshold` × `vad_energy_threshold` × `vad_silence_ms`）并沉淀推荐默认档位
+
+- [19:38 CST] M2 实质推进：完成 CPU 参数组合基线调研并产出推荐默认档位
+  - 动作：基于当前实现完成参数组合验收（partial 时间/字节触发关系 + VAD 阈值敏感性），形成 CPU 档位建议文档
+  - 产出：
+    - `docs/CPU_BASELINE_MATRIX.md`
+      - 明确 16kHz 下 `partial_interval_ms` 与 `partial_bytes_threshold` 主导关系
+      - 给出 `balanced / interactive / stability` 三档推荐参数
+      - 记录迁移真引擎后的复测风险与下一步指标化计划
+  - 测试：
+    - `.venv/bin/python -m pytest -q` → `12 passed in 0.16s`
+    - 调研脚本（VAD 阈值敏感性 + 静音切句时长）执行通过，结果已写入文档
+  - 下一步：将推荐主档（balanced）落到默认环境变量，并补充“参数切换回归测试”确保改默认值后流式行为稳定
+
+- [20:01 CST] M2 实质推进：balanced 主档落地为默认配置 + 参数切换回归测试
+  - 动作：将 `Settings.from_env` 默认参数更新为 balanced（`24000/180/120/350`），并补充“默认档位回归 + stability 档位切换”测试，确保默认值切换后行为可验证
+  - 产出：
+    - `server/config.py`
+      - 默认参数改为 balanced：`ASR_PARTIAL_BYTES_THRESHOLD=24000`
+      - `ASR_PARTIAL_INTERVAL_MS=180`
+      - `ASR_VAD_ENERGY_THRESHOLD=120`
+      - `ASR_VAD_SILENCE_MS=350`
+    - `tests/test_config_vad_baseline.py`
+      - 新增 `test_settings_from_env_defaults_to_balanced_profile`
+      - 新增 `test_settings_from_env_can_switch_to_stability_profile`
+      - 更新非法输入兜底断言到新默认值（120/350）
+    - `README.md`
+      - 同步环境变量默认值说明为 balanced 主档
+  - 测试：`.venv/bin/python -m pytest -q` → `14 passed in 0.17s`
+  - 下一步：推进真引擎适配前的接口兼容验收（mock vs 未来 qwen3 引擎），先补“引擎能力契约测试”作为替换护栏
+
+- [20:20 CST] M2 实质推进：补齐“引擎能力契约测试”作为 mock→真引擎替换护栏
+  - 动作：使用 Codex 新增 `tests/test_engine_contract.py`，围绕 `BaseASREngine` 与 `MockQwenASREngine` 建立契约回归：抽象接口可实现性、`transcribe/stream_partial/stream_final` 返回字段完整性、类型与时长一致性
+  - 产出：
+    - `tests/test_engine_contract.py`
+      - `test_base_asr_engine_contract_can_be_satisfied_by_minimal_impl`
+      - `test_mock_transcribe_contract_fields_types_and_duration_consistency`
+      - `test_mock_stream_partial_contract_fields_types_and_duration_consistency`
+      - `test_mock_stream_final_contract_fields_types_sentence_id_and_duration_consistency`
+  - 测试：`.venv/bin/python -m pytest -q` → `18 passed in 0.18s`
+  - 下一步：在不改 API 契约前提下启动 qwen3 真引擎适配层（先 CPU），并让新契约测试在双引擎下复用
+
+- [20:45 CST] M2 实质推进：落地 qwen3 适配层第一步（可配置引擎选择 + 依赖缺失自动降级）
+  - 动作：使用 Codex 实现 `ASR_ENGINE` 配置开关（`mock|qwen3`），新增引擎工厂与 `Qwen3ASREngine` CPU 占位适配器；`/healthz` 增加 `engine/backend/engine_fallback_reason` 可观测字段，保证 qwen3 依赖缺失时服务不崩溃并回退 mock
+  - 产出：
+    - `server/config.py`（新增 `asr_engine` 配置及 env 解析）
+    - `server/asr_engine/engine_factory.py`（引擎选择与降级逻辑）
+    - `server/asr_engine/qwen3_adapter.py`（占位真引擎适配器，契约字段对齐）
+    - `server/app.py`（改为工厂装配引擎，扩展 healthz 可观测信息）
+    - `tests/test_engine_factory.py`（覆盖 mock 路径与 qwen3 依赖缺失降级路径）
+    - `tests/test_config_vad_baseline.py`（新增 `ASR_ENGINE` 合法/非法值回归）
+    - `tests/test_api.py`（新增 healthz 引擎字段断言）
+  - 测试：`.venv/bin/python -m pytest -q` → `22 passed in 0.18s`
+  - 下一步：接入 qwen3 实际推理后端（先 CPU），并复用现有工厂/契约测试做双引擎一致性验收
+
+- [20:59 CST] M2 实质推进：补齐 qwen3 路径的工厂正向验收 + 适配器契约测试
+  - 动作：新增 qwen3 依赖可用场景下的引擎工厂正向测试，并为 `Qwen3ASREngine` 增加独立契约回归（transcribe/partial/final 字段、类型、时长一致性与空音频边界）
+  - 产出：
+    - `tests/test_engine_factory.py`
+      - 新增 `test_factory_selects_qwen3_engine_when_dependency_available`
+    - `tests/test_qwen3_adapter_contract.py`
+      - 新增 qwen3 适配器契约测试 2 项，覆盖分段时长连续性与 0 音频最小时长保护
+  - 测试：`.venv/bin/python -m pytest -q` → `25 passed in 0.18s`
+  - 下一步：推进 qwen3 真推理 CPU 接入（优先完成适配层中的模型加载与 `transcribe` 真实输出），并让新增契约测试在真实后端下继续通过
+
+- [21:21 CST] M2 实质推进：引擎能力可观测护栏落地（healthz + 契约）
+  - 动作：使用 Codex 为 `BaseASREngine` 新增 `engine_capabilities()` 统一能力接口；在 `MockQwenASREngine` 与 `Qwen3ASREngine` 增加 `is_placeholder/model_source` 上报；`/healthz` 增加 `engine_capabilities` 字段并保持向后兼容
+  - 产出：
+    - `server/asr_engine/base.py`（新增默认能力接口：`model_loaded` + `is_placeholder`）
+    - `server/asr_engine/qwen_engine.py`（mock 能力字段：`is_placeholder=true, model_source=mock`）
+    - `server/asr_engine/qwen3_adapter.py`（qwen3 占位能力字段：`is_placeholder=true, model_source=qwen3-placeholder`）
+    - `server/app.py`（`/healthz` 新增 `engine_capabilities`）
+    - `tests/test_api.py`（healthz 新字段断言）
+    - `tests/test_engine_contract.py`（新增 mock 能力结构回归）
+    - `tests/test_qwen3_adapter_contract.py`（新增 qwen3 能力结构回归）
+    - `README.md`（补充 `/healthz` 字段说明）
+  - 测试：`.venv/bin/python -m pytest -q` → `27 passed in 0.19s`
+  - 下一步：在不改 API 契约的前提下推进 qwen3 真推理 CPU 接入（优先实现模型加载探测与真实 `transcribe` 输出），并把 `engine_capabilities.model_source` 切到真实来源标识
+
+- [21:38 CST] M2 实质推进：qwen3 CPU 真转写首版接入（自动探测真实入口 + 占位回退）
+  - 动作：在 `Qwen3ASREngine` 增加 `qwen3_asr` 真实入口探测（`transcribe_bytes/transcribe`），当依赖提供可调用接口时直接走真实 `transcribe`；否则保持占位输出并给出能力级 fallback 原因
+  - 产出：
+    - `server/asr_engine/qwen3_adapter.py`
+      - 新增后端探测 `_probe_backend()` 与可调用入口解析 `_resolve_transcribe_callable()`
+      - 新增真实路径 `transcribe` 结果归一化（缺失 segments 自动补齐）
+      - 新增占位回退原因上报（`fallback_reason`）
+      - `engine_capabilities` 动态上报 `is_placeholder/model_source/fallback_reason`
+    - `tests/test_qwen3_adapter_contract.py`
+      - 新增真实入口场景契约断言（fake `qwen3_asr` 模块）
+      - 新增占位回退场景能力断言（无可调用入口）
+    - `README.md`
+      - 补充 `ASR_ENGINE` 环境变量
+      - 更新 `engine_capabilities.model_source` 对真实来源说明
+  - 测试：`.venv/bin/python -m pytest -q` → `28 passed in 0.18s`
+  - 下一步：补充真实 qwen3 依赖在本机安装后的冒烟验收（真实音频样本），并增加“双引擎 transcribe 输出结构一致性”回归测试
+
+- [22:01 CST] M2 实质推进：新增双引擎 transcribe 输出结构一致性回归（mock vs qwen3）
+  - 动作：使用 Codex 新增 API 黑盒测试，对比 `ASR_ENGINE=mock` 与 `ASR_ENGINE=qwen3` 下 `/v1/asr/transcribe` 响应结构一致性；同时在 qwen3 适配器补齐 `segments` 归一化，兼容真实后端可能返回的 `start/end/content` 字段
+  - 产出：
+    - `tests/test_transcribe_consistency.py`
+      - 新增 `test_transcribe_response_schema_consistent_between_mock_and_qwen3`
+      - 断言顶层字段集合/类型一致、`metrics.processing_ms` 非负、`segments` 结构/类型一致且时长区间合法
+    - `server/asr_engine/qwen3_adapter.py`
+      - 新增 `_to_non_negative_int()`、`_normalize_segments()`
+      - `transcribe()` 在真实后端路径统一输出 `start_ms/end_ms/text` 结构，避免字段漂移
+  - 测试：`.venv/bin/python -m pytest -q` → `29 passed in 0.19s`
+  - 下一步：进行真实 qwen3 依赖安装后的本机冒烟（真实音频样本），并在 `qwen3` 真后端下复用该一致性回归验证输出稳定性
+
+- [22:18 CST] M2 实质推进：新增 qwen3 真依赖本机冒烟脚本与验收护栏
+  - 动作：使用 Codex 新增 `scripts/smoke_qwen3.sh`，在 `ASR_ENGINE=qwen3` 下自动启动服务并执行 `/healthz` + `/v1/asr/transcribe` 最小冒烟；脚本在依赖缺失时明确失败且返回非 0，避免 mock 回退造成“假通过”
+  - 产出：
+    - `scripts/smoke_qwen3.sh`
+      - 新增 `qwen3_asr` 依赖导入预检（缺失即 FAIL）
+      - 新增 1 秒静音 wav 自动生成（无样本音频时）
+      - 新增 `/healthz` 强校验：`engine=qwen3`、`engine_capabilities.model_source=qwen3_asr`、`is_placeholder=false`、`engine_fallback_reason is None`
+      - 新增 `/v1/asr/transcribe` 最小可用性校验与 PASS/FAIL 汇总输出
+    - `tests/test_smoke_script.py`
+      - 校验脚本存在、可执行，且包含 `ASR_ENGINE=qwen3`、`/healthz`、`/v1/asr/transcribe` 关键检查
+    - `README.md`
+      - 新增“qwen3 本机冒烟”章节（运行命令、预期输出、失败提示）
+  - 测试：
+    - `bash -n scripts/smoke_qwen3.sh` → `OK`
+    - `.venv/bin/python -m pytest -q` → `31 passed in 0.18s`
+  - 下一步：在已安装真实 `qwen3_asr` 依赖的主机执行 `bash scripts/smoke_qwen3.sh`，沉淀一次实机 PASS 记录与样本输出
+
+- [22:39 CST] M2 实质推进：补齐 qwen3 运行时失败回退护栏（避免真实后端抛错导致接口 500）
+  - 动作：增强 `Qwen3ASREngine.transcribe()` 运行时容错：真实后端抛异常或返回非法结构时自动回退占位转写，并记录运行时 fallback 原因；同步能力上报，让 `/healthz` 可观测当前是否处于“运行时占位回退”状态
+  - 产出：
+    - `server/asr_engine/qwen3_adapter.py`
+      - 新增 `runtime_fallback_reason` 状态字段
+      - `transcribe()` 增加 `try/except` 保护：后端异常时回退占位输出并记录 `qwen3_transcribe_failed:*`
+      - 增加非法返回结构兜底：`qwen3_transcribe_invalid_response`
+      - `engine_capabilities()` 统一合并探测期/运行期 fallback reason，且运行期回退时 `is_placeholder=true`
+    - `tests/test_qwen3_adapter_contract.py`
+      - 新增 `test_qwen3_transcribe_runtime_failure_falls_back_to_placeholder`，覆盖真实后端异常下的输出可用性与能力字段断言
+  - 测试：`.venv/bin/python -m pytest -q` → `32 passed in 0.18s`
+  - 下一步：补一条 API 级黑盒回归（`ASR_ENGINE=qwen3` + 后端异常注入），验证 `/v1/asr/transcribe` 在故障场景返回 200 且结构稳定，并与 `engine_fallback_reason` 联动一致
+
+- [23:00 CST] M2 实质推进：完成 qwen3 运行时异常的 API 级黑盒回归 + healthz 联动修正
+  - 动作：实现 `/healthz` 的 `engine_fallback_reason` 动态优先读取运行期 `engine_capabilities.fallback_reason`；新增 API 黑盒测试注入 qwen3 后端异常，验证 transcribe 故障不 500 且 healthz 回退原因联动一致
+  - 产出：
+    - `server/app.py`
+      - `healthz()` 新增 `capabilities` 局部变量
+      - `engine_fallback_reason` 改为优先使用运行期 `fallback_reason`（无运行期回退时再回落到工厂探测期 fallback）
+    - `tests/test_api_qwen3_runtime_fallback.py`
+      - 新增 `test_transcribe_keeps_200_and_healthz_fallback_reason_on_qwen3_runtime_failure`
+      - 覆盖 `ASR_ENGINE=qwen3` + 后端异常注入场景：`/v1/asr/transcribe` 返回 200、输出结构稳定、`/healthz` 的 `engine_fallback_reason == engine_capabilities.fallback_reason`
+  - 测试：`.venv/bin/python -m pytest -q` → `33 passed in 0.18s`
+  - 下一步：在安装真实 `qwen3_asr` 的机器上执行 `scripts/smoke_qwen3.sh`，补一条“真实后端成功路径”与“异常路径后恢复成功路径”的连续冒烟记录
+
+- [23:18 CST] M2 实质推进：新增 healthz `engine_ready` 就绪信号并收敛冒烟验收条件
+  - 动作：在 `/healthz` 增加 `engine_ready`（`model_loaded=true` 且 `is_placeholder=false` 且 `engine_fallback_reason=null`）统一真引擎就绪判定；同步更新 qwen3 冒烟脚本与 API/脚本测试，避免仅凭 `model_loaded` 误判可用性
+  - 产出：
+    - `server/app.py`
+      - `healthz()` 新增 `engine_ready` 字段并复用现有 capabilities/fallback 计算
+    - `scripts/smoke_qwen3.sh`
+      - `/healthz` 强校验新增 `engine_ready is True` 检查，并输出 `engine_ready=...`
+    - `tests/test_api.py`
+      - 新增 `engine_ready` 字段断言，并验证其与 `model_loaded/is_placeholder/engine_fallback_reason` 逻辑一致
+    - `tests/test_api_qwen3_runtime_fallback.py`
+      - 新增运行时回退场景 `engine_ready is False` 断言
+    - `tests/test_smoke_script.py`
+      - 新增脚本包含 `engine_ready` 校验的回归断言
+    - `README.md`
+      - 补充 `engine_ready` 字段说明与冒烟脚本输出示例
+  - 测试：`.venv/bin/python -m pytest -q` → `33 passed in 0.19s`
+  - 下一步：在已安装真实 `qwen3_asr` 的主机执行 `bash scripts/smoke_qwen3.sh`，记录一次 `engine_ready=true` 的实机 PASS 结果并回填文档
+
+- [23:42 CST] M2 实质推进：补齐“运行时异常后恢复成功”API 黑盒回归，验证 fallback 可自动清除
+  - 动作：在 `tests/test_api_qwen3_runtime_fallback.py` 新增“首调失败、次调恢复”场景，注入可恢复的 flaky qwen3 后端；验证第一次失败后 `/healthz` 报告 `engine_ready=false` 与 `fallback_reason`，第二次成功后 `engine_ready=true` 且 `engine_fallback_reason/fallback_reason` 清空
+  - 产出：
+    - `tests/test_api_qwen3_runtime_fallback.py`
+      - 新增 `test_transcribe_runtime_failure_then_recovery_clears_fallback_and_engine_ready`
+      - 额外断言真实恢复路径下 `segments` 归一化结构稳定（`start_ms/end_ms/text`）
+  - 测试：
+    - `.venv/bin/python -m pytest -q tests/test_api_qwen3_runtime_fallback.py` → `2 passed in 0.16s`
+    - `.venv/bin/python -m pytest -q` → `34 passed in 0.19s`
+  - 下一步：在真实 `qwen3_asr` 依赖环境执行“失败注入→恢复”连续冒烟，补充实机证据与故障恢复时延记录
+
+- [23:59 CST] M2 实质推进：增强 qwen3 冒烟脚本产物留档能力（便于实机验收追溯）
+  - 动作：扩展 `scripts/smoke_qwen3.sh`，新增 `OUT_DIR` 可配置输出目录与按时间戳分 run 的产物归档；自动保存 `healthz.json`、`transcribe.json`、`uvicorn.log` 与 `summary.json`，并在结束时打印 run 目录，便于后续把实机 PASS/FAIL 证据直接回填文档
+  - 产出：
+    - `scripts/smoke_qwen3.sh`
+      - 新增 `OUT_DIR/RUN_DIR` 结构化归档（默认 `logs/smoke_qwen3/<timestamp>`）
+      - 新增 `write_summary()`，在退出时写入 `summary.json`（PASS/FAIL、关键路径、统计计数）
+      - 启动日志改写入 run 目录下 `uvicorn.log`
+      - `/healthz` 与 `/v1/asr/transcribe` 响应分别落盘为 `healthz.json`、`transcribe.json`
+      - 控制台新增 `Artifacts: run_dir=...` 输出
+  - 测试：
+    - `.venv/bin/python -m pytest -q tests/test_smoke_script.py` → `2 passed in 0.00s`
+    - `.venv/bin/python -m pytest -q` → `34 passed in 0.19s`
+  - 下一步：在已安装真实 `qwen3_asr` 的主机运行 `bash scripts/smoke_qwen3.sh`，将生成的 `logs/smoke_qwen3/<timestamp>/summary.json` 与关键产物路径写入推进记录，完成实机验收留痕
+
+## 2026-03-04
+- [14:46 CST] P1 实质推进：交付 Windows 热键客户端首版（可直接打包单文件 EXE）
+
+## 2026-03-05
+- [16:xx CST] P1 实质推进：交付 CPU 基线性能报告生成器与模板
+  - 动作：
+    - 新增 `scripts/generate_perf_report.py`，自动读取最新 `logs/smoke_qwen3/*` 与 `logs/stream_smoke_qwen3/*`，汇总 HTTP/流式指标并输出 `docs/perf/perf_report.json` + `docs/perf/PERF_REPORT.md`
+    - 增加 HTTP 指标兜底逻辑：当 `summary.json` 缺少 `transcribe_elapsed_ms` 时，自动回退读取 `transcribe.json.metrics.processing_ms`
+    - 新增脚本回归测试 `tests/test_generate_perf_report.py`
+    - 同步更新 `README.md` 的性能报告生成说明
+  - 产出：
+    - `scripts/generate_perf_report.py`
+    - `tests/test_generate_perf_report.py`
+    - `docs/perf/perf_report.json`
+    - `docs/perf/PERF_REPORT.md`
+    - `README.md`
+  - 测试：
+    - `.venv/bin/python -m pytest -q tests/test_generate_perf_report.py` → `1 passed`
+    - `.venv/bin/python -m pytest -q` → `57 passed in 20.40s`
+  - 下一步：等待 5090 实机后按同脚本口径回填 GPU 指标，形成 CPU vs GPU 对比结论
+
+- [15:xx CST] P2 实质推进：交付 Docker/Compose 与部署手册基础版
+  - 动作：
+    - 新增 `.dockerignore`，避免 `.venv/logs/windows-client` 等无关内容进入镜像上下文
+    - 新增 `Dockerfile`（Python 3.11-slim，内置 uvicorn 启动）
+    - 新增 `docker-compose.yml`（端口映射、环境变量、日志挂载、healthcheck、restart 策略）
+    - 新增 `docs/DEPLOYMENT.md`（启动/验证/日志/停止/常见问题）
+    - 更新 `README.md` Docker 使用章节
+  - 产出：
+    - `.dockerignore`
+    - `Dockerfile`
+    - `docker-compose.yml`
+    - `docs/DEPLOYMENT.md`
+    - `README.md`
+  - 验证：
+    - `.venv/bin/python -m pytest -q` → `56 passed in 20.69s`
+    - `docker compose config` 本机执行报错 `command not found: docker`（已定位为当前环境未安装 Docker，非项目文件错误）
+  - 下一步：补充性能对比报告模板（CPU 基线先落地，GPU 数据位预留）
+
+- [15:xx CST] P1 实质推进：完成“超时恢复策略”落地（HTTP 504 + WS 空闲超时）
+  - 动作：
+    - `server/config.py` 新增并配置化超时参数：`ASR_TRANSCRIBE_TIMEOUT_MS`（默认 15000，最小 500）、`ASR_WS_IDLE_TIMEOUT_MS`（默认 10000，最小 1000）
+    - `POST /v1/asr/transcribe` 改为 `asyncio.wait_for + to_thread` 执行引擎转写，超时返回 `504 asr transcribe timeout`
+    - `WS /v1/asr/stream` 增加 receive 空闲超时保护，超时返回 `SESSION_IDLE_TIMEOUT` 并主动关闭连接
+    - 补齐回归测试：HTTP 超时 504、WS 空闲超时错误码、配置超时阈值钳制
+    - 同步更新 `README.md` 与 `docs/API_CONTRACT.md` 的超时配置与错误码说明
+  - 产出：
+    - `server/config.py`
+    - `server/routes/transcribe.py`
+    - `server/routes/ws_stream.py`
+    - `tests/test_api_transcribe_resilience.py`
+    - `tests/test_ws_stream.py`
+    - `tests/test_config_vad_baseline.py`
+    - `README.md`
+    - `docs/API_CONTRACT.md`
+    - `docs/PROJECT_TODO.md`
+
+- [12:xx CST] P1 实质推进：完成“异常恢复策略”中可本机闭环的 HTTP/WS 音频健壮性加固
+  - 动作：
+    - `POST /v1/asr/transcribe` 增加输入校验与可恢复错误：空文件/非 PCM16 奇数字节/过短音频（<320 bytes）返回 400；引擎异常返回 503（避免 500 直接暴露）
+    - `WS /v1/asr/stream` 增加坏音频与状态校验：奇数字节 chunk 返回 `BAD_AUDIO_FORMAT`，`stop` 前无音频返回 `BAD_AUDIO_STATE`，过短音频返回 `BAD_AUDIO_TOO_SHORT`
+    - 新增“同 session_id 重连允许”回归测试，固化断流后幂等重连基线
+    - 同步更新 `docs/API_CONTRACT.md` 错误码与 healthz 字段说明
+  - 产出：
+    - `server/routes/transcribe.py`
+    - `server/routes/ws_stream.py`
+    - `tests/test_api.py`
+    - `tests/test_api_transcribe_resilience.py`
+    - `tests/test_ws_stream.py`
+    - `docs/API_CONTRACT.md`
+    - `docs/PROJECT_TODO.md`
+  - 测试：`.venv/bin/python -m pytest -q` → `53 passed in 21.31s`
+  - 下一步：补齐“超时恢复策略”与“流式会话级超时/心跳建议”并落地测试
+  - 动作：新增 WinForms 客户端工程，支持麦克风设备选择、全局快捷键注册、后台托盘常驻、WebSocket 实时推流到 `/v1/asr/stream`、接收 `partial/final` 后自动粘贴到当前焦点输入框
+  - 产出：
+    - `windows-client/WinAsrHotkeyClient/WinAsrHotkeyClient.csproj`
+    - `windows-client/WinAsrHotkeyClient/Program.cs`
+    - `windows-client/WinAsrHotkeyClient/MainForm.cs`
+    - `windows-client/README.md`（含 self-contained 单文件 EXE 打包命令）
+  - 测试：当前主机无 `dotnet`（无法本地编译 Win 客户端）；已确保代码结构完整并给出 Windows 侧一键 publish 命令
+  - 证据路径：
+    - `windows-client/WinAsrHotkeyClient/`
+    - `windows-client/README.md`
+  - 下一步：在 Windows 机器执行 `dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true`，完成真机麦克风/热键/粘贴链路验收
+
+- [14:40 CST] M2/P0 实质推进：固化离线验收“新鲜度双模式”执行规范并完成待办收口
+  - 动作：在 README 增加“离线验收新鲜度策略（固定执行规范）”章节，明确 CI 门禁模式（不设 `--max-age-minutes`）与 Cron/手工实机模式（必须设 `--max-age-minutes`，建议 30~180）；补充 HTTP/流式双脚本标准命令与通过/失败判定口径
+  - 产出：
+    - `README.md`（新增双模式策略章节）
+    - `docs/PROJECT_TODO.md`（将“固化新鲜度策略”条目置为完成）
+  - 测试：文档变更，无代码路径变更，本轮无需新增回归测试
+  - 证据路径：
+    - `README.md`
+    - `docs/PROJECT_TODO.md`
+  - 下一步：进入 P1（GPU 5090 实机联调与参数优化）排期与验收标准定义
+
+- [13:45 CST] M2/P0 实质推进：将流式离线验收正式接入 CI 门禁并完成本地回归
+  - 动作：
+    - 新增 GitHub Actions 工作流 `.github/workflows/stream-verify.yml`；
+    - 在 CI 中执行两道门禁：`pytest -q` + `python scripts/verify_stream_smoke_run.py --latest --root-dir logs/stream_smoke_qwen3 --json`；
+    - 本地先行复跑同款命令，确认当前仓库状态可通过门禁。
+  - 产出：
+    - `.github/workflows/stream-verify.yml`
+  - 测试：
+    - `.venv/bin/python -m pytest -q` → `47 passed in 20.76s`
+    - `.venv/bin/python scripts/verify_stream_smoke_run.py --latest --root-dir logs/stream_smoke_qwen3 --json` → `{"result": "PASS", "run_dir": "logs/stream_smoke_qwen3/20260304_124752", ...}`
+  - 证据路径：
+    - `.github/workflows/stream-verify.yml`
+    - `logs/stream_smoke_qwen3/20260304_124752/summary.json`
+    - `logs/stream_smoke_qwen3/20260304_124752/events.jsonl`
+  - 下一步：补充“可选新鲜度门槛”双模式（CI 无新鲜度门槛；定时任务带 `--max-age-minutes`）的文档说明，避免误用。
+
+- [14:17 CST] M2/P0 实质推进：在真实 qwen3 依赖环境完成新一轮 HTTP + 流式实机复验并全量通过
+  - 动作：
+    - 使用真实语音样本 `logs/audio_samples/tts_zh_16k.wav` 执行 `scripts/smoke_qwen3.sh`，完成 `/healthz` + `/v1/asr/transcribe` 真后端冒烟；
+    - 以 `ASR_ENGINE=qwen3` 启动服务后执行 `scripts/stream_smoke_qwen3.py`，完成 `/v1/asr/stream` 真实 chunk 推流验证；
+    - 对两类 run 分别执行离线验收脚本并带新鲜度门槛（30 分钟）验证，确保不是历史缓存结果。
+  - 产出：
+    - 新增 HTTP 冒烟 run：`logs/smoke_qwen3/20260304_141613/`
+    - 新增流式冒烟 run：`logs/stream_smoke_qwen3/20260304_141706/`
+  - 测试：
+    - `AUDIO_PATH=logs/audio_samples/tts_zh_16k.wav bash scripts/smoke_qwen3.sh` → `Summary: PASS=4, FAIL=0`
+    - `.venv/bin/python scripts/verify_smoke_run.py --latest --root-dir logs/smoke_qwen3 --max-age-minutes 30 --json` → `{"result":"PASS","run_dir":"logs/smoke_qwen3/20260304_141613",...}`
+    - `ASR_ENGINE=qwen3 .venv/bin/python -m uvicorn server.app:app --host 127.0.0.1 --port 8012`
+    - `.venv/bin/python scripts/stream_smoke_qwen3.py --base-url http://127.0.0.1:8012 --audio logs/audio_samples/tts_zh_16k.wav --chunk-ms 120` → `{"result":"PASS","partial_count":5,"events":7,...}`
+    - `.venv/bin/python scripts/verify_stream_smoke_run.py --latest --root-dir logs/stream_smoke_qwen3 --max-age-minutes 30 --json` → `{"result":"PASS","run_dir":"logs/stream_smoke_qwen3/20260304_141706",...}`
+  - 证据路径：
+    - `logs/smoke_qwen3/20260304_141613/summary.json`
+    - `logs/smoke_qwen3/20260304_141613/healthz.json`
+    - `logs/smoke_qwen3/20260304_141613/transcribe.json`
+    - `logs/smoke_qwen3/20260304_141613/uvicorn.log`
+    - `logs/stream_smoke_qwen3/20260304_141706/summary.json`
+    - `logs/stream_smoke_qwen3/20260304_141706/events.jsonl`
+    - `logs/uvicorn_stream_8012.log`
+  - 下一步：将 `--max-age-minutes` 双模式策略（CI 不设门槛、Cron 设 30-180 分钟）固化进 README/项目文档，避免离线验收误用历史 run。
+
+- [12:24 CST] M2/P0 实质推进：打通真实 qwen-asr 依赖链路并完成实机冒烟 + 离线验收 PASS
+  - 动作：
+    - 在 `.venv` 安装真实依赖 `qwen-asr`，修复此前仅识别 `qwen3_asr` 的阻塞；
+    - 升级 `Qwen3ASREngine` 后端探测逻辑：优先 `qwen3_asr`，回退兼容 `qwen_asr`（`Qwen3ASRModel.from_pretrained`）；
+    - 修复 `scripts/smoke_qwen3.sh` 产物留档 bug（`summary.json` 未落盘、`pass_count/fail_count` 未同步到环境变量）；
+    - 放宽冒烟/离线验收对 `model_source` 的真实后端判定：支持 `qwen3_asr|qwen_asr`。
+  - 产出：
+    - `server/asr_engine/qwen3_adapter.py`（新增 qwen_asr 真实后端兼容与归一化）
+    - `server/asr_engine/engine_factory.py`（依赖检查支持 `qwen3_asr` 或 `qwen_asr`）
+    - `scripts/smoke_qwen3.sh`（依赖检查兼容 + summary 落盘修复）
+    - `scripts/verify_smoke_run.py`（model_source 验收兼容）
+    - `tests/test_qwen3_adapter_contract.py`（回退原因断言更新）
+    - `README.md`（model_source/依赖说明同步）
+  - 测试：
+    - `.venv/bin/python -m pytest -q` → `42 passed in 20.28s`
+    - `bash scripts/smoke_qwen3.sh` → PASS，`engine_ready=True`，`model_source=qwen_asr`
+    - `python scripts/verify_smoke_run.py --latest --root-dir logs/smoke_qwen3 --max-age-minutes 180 --json` → `{"result":"PASS",...}`
+  - 证据路径：
+    - `logs/smoke_qwen3/20260304_122432/summary.json`
+    - `logs/smoke_qwen3/20260304_122432/healthz.json`
+    - `logs/smoke_qwen3/20260304_122432/transcribe.json`
+    - `logs/smoke_qwen3/20260304_122432/uvicorn.log`
+  - 下一步：补一轮真实流式用例（`/v1/asr/stream`）实机验证，沉淀 chunk 时序输入与事件输出证据。
+
+- [12:47 CST] M2/P0 实质推进：完成真实音频样本的 HTTP + 流式实机验收闭环（qwen3 真依赖）
+  - 动作：
+    - 新增流式实机冒烟脚本 `scripts/stream_smoke_qwen3.py`（读取 PCM16 WAV，按 chunk 推送 `/v1/asr/stream`，自动落盘事件流与 summary）；
+    - 生成真实语音样本 `logs/audio_samples/tts_zh_16k.wav`（macOS `say` + `afconvert`）；
+    - 在 `ASR_ENGINE=qwen3` 下复跑 `scripts/smoke_qwen3.sh`（指定真实语音样本）并通过离线验收；
+    - 启动服务并执行流式脚本，拿到 `partial + final` 事件证据。
+  - 产出：
+    - `scripts/stream_smoke_qwen3.py`
+    - `logs/audio_samples/tts_zh_16k.wav`
+    - `logs/smoke_qwen3/20260304_124722/{summary.json,healthz.json,transcribe.json,uvicorn.log}`
+    - `logs/stream_smoke_qwen3/20260304_124752/{summary.json,events.jsonl}`
+    - `logs/uvicorn_stream_8012.log`
+  - 测试：
+    - `AUDIO_PATH=logs/audio_samples/tts_zh_16k.wav bash scripts/smoke_qwen3.sh` → PASS（`engine_ready=True`, `model_source=qwen_asr`）
+    - `.venv/bin/python scripts/verify_smoke_run.py --latest --root-dir logs/smoke_qwen3 --max-age-minutes 60 --json` → `{"result":"PASS",...}`
+    - `ASR_ENGINE=qwen3 .venv/bin/python -m uvicorn server.app:app --host 127.0.0.1 --port 8012`
+    - `.venv/bin/python scripts/stream_smoke_qwen3.py --base-url http://127.0.0.1:8012 --audio logs/audio_samples/tts_zh_16k.wav --chunk-ms 120` → PASS（`partial_count=5`, `events=7`）
+    - `.venv/bin/python -m pytest -q` → `42 passed in 20.64s`
+  - 证据路径：
+    - `logs/smoke_qwen3/20260304_124722/summary.json`
+    - `logs/smoke_qwen3/20260304_124722/healthz.json`
+    - `logs/smoke_qwen3/20260304_124722/transcribe.json`
+    - `logs/stream_smoke_qwen3/20260304_124752/summary.json`
+    - `logs/stream_smoke_qwen3/20260304_124752/events.jsonl`
+    - `logs/uvicorn_stream_8012.log`
+  - 下一步：基于 `events.jsonl` 新增流式离线验收器（校验 start/partial/final 时序、metrics 字段与 `partial_count` 下限），接入 CI 防回归。
+
+- [13:15 CST] M2/P0 实质推进：新增流式离线验收脚本并完成实机产物校验 PASS
+  - 动作：
+    - 新增 `scripts/verify_stream_smoke_run.py`，对 `logs/stream_smoke_qwen3/<timestamp>` 进行离线验收；
+    - 校验 `summary.json` 与 `events.jsonl` 产物完整性、路径一致性、start/partial/final 时序、`end_ms` 单调性、以及 `first_token_latency_ms/sentence_latency_ms` 指标字段；
+    - 新增 `--latest/--root-dir/--max-age-minutes/--json`，支持自动挑选最近 run、新鲜度门槛与 CI 机器可读输出；
+    - 补齐 `tests/test_verify_stream_smoke_run.py` 回归用例（PASS、缺失 final、freshness、CLI JSON PASS/FAIL）。
+  - 产出：
+    - `scripts/verify_stream_smoke_run.py`
+    - `tests/test_verify_stream_smoke_run.py`
+    - `README.md`（新增流式离线验收命令）
+  - 测试：
+    - `.venv/bin/python -m pytest -q tests/test_verify_stream_smoke_run.py` → `5 passed in 0.10s`
+    - `.venv/bin/python -m pytest -q` → `47 passed in 20.81s`
+    - `.venv/bin/python scripts/verify_stream_smoke_run.py --latest --root-dir logs/stream_smoke_qwen3 --max-age-minutes 180 --json` → `{"result":"PASS",...}`
+  - 证据路径：
+    - `logs/stream_smoke_qwen3/20260304_124752/summary.json`
+    - `logs/stream_smoke_qwen3/20260304_124752/events.jsonl`
+    - `scripts/verify_stream_smoke_run.py`
+    - `tests/test_verify_stream_smoke_run.py`
+  - 下一步：将 `verify_stream_smoke_run.py --latest --root-dir logs/stream_smoke_qwen3 --max-age-minutes 180 --json` 接入 CI 作为流式回归门禁。
+
+- [00:20 CST] M2 实质推进：新增冒烟产物离线验收脚本（避免人工肉眼核对）
+  - 动作：新增 `scripts/verify_smoke_run.py`，对 `logs/smoke_qwen3/<timestamp>` 进行结构化验收；强校验 `summary/healthz/transcribe/uvicorn.log` 四类产物完整性与关键字段（`engine_ready`、`model_source`、`fallback_reason`、`processing_ms`），并返回明确 PASS/FAIL；补充单元测试与 README 用法文档
+  - 产出：
+    - `scripts/verify_smoke_run.py`
+      - 新增 `verify_run_dir()`：校验必备文件存在且非空
+      - 新增 `summary.json` 验收：`result=PASS`、`fail_count=0`、`pass_count>=3`
+      - 新增 `healthz.json` 验收：`engine=qwen3`、`engine_ready=true`、`engine_capabilities.model_source=qwen3_asr`、`is_placeholder=false`、`engine_fallback_reason=null`
+      - 新增 `transcribe.json` 验收：`text` 非空、`segments` 非空、`metrics.processing_ms` 存在
+    - `tests/test_verify_smoke_run.py`
+      - 新增通过场景测试
+      - 新增失败场景测试（`engine_ready=false`）
+    - `README.md`
+      - 新增离线验收命令 `python scripts/verify_smoke_run.py logs/smoke_qwen3/<timestamp>` 与输出说明
+  - 测试：`.venv/bin/python -m pytest -q` → `36 passed in 0.19s`
+  - 下一步：在真实 `qwen3_asr` 机器完成一次实机冒烟后，立即执行 `verify_smoke_run.py` 并把 PASS 结果与 run 目录写入推进记录，形成“实机+离线校验”双证据闭环
+
+- [00:38 CST] M2 实质推进：增强离线验收脚本的一致性与结构约束（防“伪通过”）
+  - 动作：扩展 `scripts/verify_smoke_run.py`，新增 `summary` 与产物路径一致性校验（`run_dir/healthz_path/transcribe_path/uvicorn_log`），并加严 `transcribe.segments` 结构校验（`start_ms/end_ms/text` 必备、类型与区间合法）；同步补齐失败回归用例
+  - 产出：
+    - `scripts/verify_smoke_run.py`
+      - 新增 `_verify_summary_consistency()`：校验 summary 中路径字段与当前 run 目录一致
+      - 新增 `_verify_transcribe_segments()`：逐段校验 `start_ms>=0`、`end_ms>=start_ms`、`text` 非空
+      - 更新通过提示，标注“artifact path consistency”
+    - `tests/test_verify_smoke_run.py`
+      - 重构测试夹具，统一构造有效 run 目录
+      - 新增失败用例：`segments.end_ms < start_ms`
+      - 新增失败用例：`summary.run_dir` 与入参不一致
+      - 保留并复用 `engine_ready=false` 失败回归
+  - 测试：
+    - `.venv/bin/python -m pytest -q tests/test_verify_smoke_run.py` → `4 passed in 0.01s`
+    - `.venv/bin/python -m pytest -q` → `38 passed in 0.20s`
+  - 下一步：在真实 `qwen3_asr` 环境执行一次 `scripts/smoke_qwen3.sh`，随后用增强版 `verify_smoke_run.py` 校验并回填 run 目录与 PASS 证据
+
+- [00:58 CST] M2 实质推进：离线验收支持“最新 run 自动选择 + 新鲜度校验”
+  - 动作：增强 `scripts/verify_smoke_run.py` CLI，新增 `--latest`/`--root-dir` 自动选择最新冒烟目录，并新增 `--max-age-minutes` 新鲜度门槛，避免误把历史 PASS 当成当前验收结果；同步补齐单测与 README 使用说明
+  - 产出：
+    - `scripts/verify_smoke_run.py`
+      - 新增 `_resolve_latest_run_dir()`：自动选择 `logs/smoke_qwen3` 下最新 run
+      - 新增 `_assert_run_fresh()`：校验 run 目录年龄不超过阈值分钟数
+      - CLI 新增参数：`--latest`、`--root-dir`、`--max-age-minutes`
+    - `tests/test_verify_smoke_run.py`
+      - 新增 `test_resolve_latest_run_dir_selects_latest_by_name`
+      - 新增 `test_assert_run_fresh_fail_when_too_old`
+    - `README.md`
+      - 新增“最新 run + 新鲜度校验”命令示例
+  - 测试：
+    - `.venv/bin/python -m pytest -q tests/test_verify_smoke_run.py` → `6 passed in 0.02s`
+    - `.venv/bin/python -m pytest -q` → `40 passed in 0.20s`
+  - 下一步：在真实 `qwen3_asr` 主机执行 `bash scripts/smoke_qwen3.sh` 后，直接运行 `python scripts/verify_smoke_run.py --latest --root-dir logs/smoke_qwen3 --max-age-minutes 180`，将 PASS 结果与 run 目录回填推进记录
+
+- [01:20 CST] M2 实质推进：离线验收新增 `--json` 机器可读输出（CI 可直接消费）
+  - 动作：扩展 `scripts/verify_smoke_run.py` CLI，新增 `--json` 参数；在 PASS/FAIL 两条路径统一输出 JSON 对象（含 `result/run_dir/notes/error`），避免 CI 解析自然语言日志；同步补齐 CLI 级回归测试与 README 示例
+  - 产出：
+    - `scripts/verify_smoke_run.py`
+      - 新增 `--json` 参数
+      - 新增 `_json_report()` 统一组装 JSON 输出
+      - FAIL 场景支持 JSON 错误对象输出并保持非 0 退出码
+    - `tests/test_verify_smoke_run.py`
+      - 新增 `test_verify_smoke_run_cli_json_pass`
+      - 新增 `test_verify_smoke_run_cli_json_fail`
+    - `README.md`
+      - 新增 `--json` 用法与输出示例
+  - 测试：
+    - `.venv/bin/python -m pytest -q tests/test_verify_smoke_run.py` → `8 passed in 0.10s`
+    - `.venv/bin/python -m pytest -q` → `42 passed in 0.28s`
+  - 下一步：在真实 `qwen3_asr` 主机上执行冒烟后，直接用 `python scripts/verify_smoke_run.py --latest --root-dir logs/smoke_qwen3 --max-age-minutes 180 --json` 产出可归档验收结果，并把 JSON 结果与 run 目录回填推进记录

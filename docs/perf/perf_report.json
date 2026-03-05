@@ -1,0 +1,24 @@
+{
+  "generated_at": "2026-03-05T16:53:41",
+  "baseline": "cpu",
+  "http": {
+    "run_dir": "logs/smoke_qwen3/20260304_141613",
+    "result": "PASS",
+    "transcribe_elapsed_ms": 0,
+    "audio_bytes": 35
+  },
+  "stream": {
+    "run_dir": "logs/stream_smoke_qwen3/20260304_141706",
+    "partial_count": 5,
+    "elapsed_ms": 975,
+    "audio_bytes": 153624,
+    "first_token_latency_mean_ms": 460.4,
+    "first_token_latency_p95_ms": 624,
+    "sentence_latency_mean_ms": 949,
+    "sentence_latency_p95_ms": 949
+  },
+  "gpu_placeholder": {
+    "status": "pending-5090-validation",
+    "notes": "Run same scripts on 5090 and fill comparable metrics."
+  }
+}
