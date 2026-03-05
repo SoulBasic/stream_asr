@@ -6,7 +6,7 @@
 
 ## 2. 启动服务
 ```bash
-cd qwen3-asr-service
+cd stream_asr
 docker compose up -d --build
 ```
 
@@ -18,7 +18,7 @@ curl -s http://127.0.0.1:8000/healthz
 
 ## 4. 查看日志
 ```bash
-docker compose logs -f qwen3-asr-service
+docker compose logs -f stream_asr
 ```
 
 ## 5. 停止服务

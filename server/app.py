@@ -14,7 +14,7 @@ def create_app() -> FastAPI:
     logger = setup_logging(settings.log_path, settings.log_level)
     engine_selection = create_engine(settings=settings, logger=logger)
 
-    app = FastAPI(title="qwen3-asr-service", version="0.1.0")
+    app = FastAPI(title="stream_asr", version="0.1.0")
     app.state.settings = settings
     app.state.logger = logger
     app.state.engine = engine_selection.engine

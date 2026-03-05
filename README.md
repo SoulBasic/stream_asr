@@ -1,4 +1,4 @@
-# qwen3-asr-service (mock skeleton)
+# stream_asr (mock skeleton)
 
 一个可运行的 FastAPI ASR 服务骨架，当前引擎为 mock，实现了 HTTP 文件转写与 WebSocket 流式协议，后续可替换为 qwen3-asr。
 
@@ -207,7 +207,7 @@ python scripts/verify_stream_smoke_run.py --latest --root-dir logs/stream_smoke_
 ```bash
 docker compose up -d --build
 curl -s http://127.0.0.1:8000/healthz
-docker compose logs -f qwen3-asr-service
+docker compose logs -f stream_asr
 ```
 
 说明：

@@ -1,12 +1,12 @@
 version: "3.9"
 
 services:
-  qwen3-asr-service:
+  stream_asr:
     build:
       context: .
       dockerfile: Dockerfile
-    image: qwen3-asr-service:latest
-    container_name: qwen3-asr-service
+    image: stream_asr:latest
+    container_name: stream_asr
     ports:
       - "8000:8000"
     environment:

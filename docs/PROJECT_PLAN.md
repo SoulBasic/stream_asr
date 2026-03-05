@@ -138,7 +138,7 @@
 ## 9. 目录草案
 
 ```text
-qwen3-asr-service/
+stream_asr/
   docs/
     PROJECT_PLAN.md
     API_CONTRACT.md
